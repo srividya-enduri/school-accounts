@@ -768,8 +768,35 @@
   };
 
   // ---------------------------------------------------------------- Reports
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function rangePreset(name) {
+    const t = todayStr();
+    const [y, m] = t.split('-').map(Number);
+    if (name === 'today') return [t, t];
+    if (name === 'month') return [t.slice(0, 8) + '01', t];
+    if (name === 'lastmonth') return [ymd(new Date(y, m - 2, 1)), ymd(new Date(y, m - 1, 0))];
+    if (name === 'fy') return fyRange(fyOf(t));
+    if (name === 'lastfy') { const s = parseInt(fyOf(t).slice(0, 4), 10) - 1; return fyRange(`${s}-${String((s + 1) % 100).padStart(2, '0')}`); }
+    return fyRange(fyOf(t));
+  }
+  async function loadRange(from, to, statuses) {
+    return fetchAll(() => {
+      let x = sb.from('transactions').select('*').gte('txn_date', from).lte('txn_date', to)
+        .order('txn_date', { ascending: true }).order('id', { ascending: true });
+      if (statuses) x = x.in('status', statuses);
+      return x;
+    });
+  }
+
   VIEWS.reports = async function viewReports(v) {
-    const [txns, budgets] = await Promise.all([loadTxns(S.fy, ['approved']), q(sb.from('budgets').select('*').eq('fy', S.fy))]);
+    if (!S.rep) S.rep = { from: rangePreset('fy')[0], to: rangePreset('fy')[1] };
+    const { from, to } = S.rep;
+    // Budgets only make sense when the range is exactly one financial year
+    const fullFy = fyOf(from) === fyOf(to) && fyRange(fyOf(from))[0] === from && fyRange(fyOf(from))[1] === to ? fyOf(from) : null;
+    const [txns, budgets] = await Promise.all([
+      loadRange(from, to, ['approved']),
+      fullFy ? q(sb.from('budgets').select('*').eq('fy', fullFy)) : Promise.resolve([])
+    ]);
     const inc = txns.filter((t) => t.kind === 'income'), exp = txns.filter((t) => t.kind === 'expense');
     const totInc = sum(inc), totExp = sum(exp);
     const group = (rows, key) => { const m = {}; rows.forEach((t) => { const k = t[key] ?? 'none'; m[k] = (m[k] || 0) + Number(t.amount); }); return m; };
@@ -800,15 +827,49 @@
 
     const fInc = group(inc, 'fund_id'), fExp = group(exp, 'fund_id');
     const fundIds = Array.from(new Set([...Object.keys(fInc), ...Object.keys(fExp)]));
-    const mInc = Array(12).fill(0), mExp = Array(12).fill(0);
-    inc.forEach((t) => { mInc[fyMonth(t.txn_date)] += Number(t.amount); });
-    exp.forEach((t) => { mExp[fyMonth(t.txn_date)] += Number(t.amount); });
+
+    // Period breakdown: day by day for short ranges, month by month otherwise
+    const days = Math.round((new Date(to + 'T00:00:00') - new Date(from + 'T00:00:00')) / 86400000) + 1;
+    const byDay = days <= 62;
+    const buckets = [];
+    if (byDay) {
+      for (let d = new Date(from + 'T00:00:00'); ymd(d) <= to; d.setDate(d.getDate() + 1)) buckets.push({ key: ymd(d), label: fmtDate(ymd(d)) });
+    } else {
+      for (let d = new Date(from.slice(0, 7) + '-01T00:00:00'); ymd(d).slice(0, 7) <= to.slice(0, 7); d.setMonth(d.getMonth() + 1)) {
+        buckets.push({ key: ymd(d).slice(0, 7), label: d.toLocaleDateString(cfg.LOCALE, { month: 'short', year: 'numeric' }) });
+      }
+    }
+    const bKey = (t) => byDay ? t.txn_date : t.txn_date.slice(0, 7);
+    const bInc = {}, bExp = {};
+    inc.forEach((t) => { bInc[bKey(t)] = (bInc[bKey(t)] || 0) + Number(t.amount); });
+    exp.forEach((t) => { bExp[bKey(t)] = (bExp[bKey(t)] || 0) + Number(t.amount); });
+    const shownBuckets = byDay ? buckets.filter((b) => bInc[b.key] || bExp[b.key]) : buckets;
+    const net = totInc - totExp;
+    const periodText = from === to ? fmtDate(from) : `${fmtDate(from)} – ${fmtDate(to)}`;
+    const presets = [['today', 'Today'], ['month', 'This month'], ['lastmonth', 'Last month'], ['fy', 'This FY'], ['lastfy', 'Last FY']];
+    const activePreset = presets.find(([k]) => { const [a, b] = rangePreset(k); return a === from && b === to; })?.[0];
 
     v.innerHTML = `
-      <div class="page-head"><h1>Reports</h1>${fySelect()}
-        <div class="actions no-print"><button class="btn" id="print">Print / save as PDF</button><button class="btn" id="csv">Download all entries (CSV)</button></div></div>
-      <p class="muted small">Only approved entries are counted. FY ${S.fy} (1 April – 31 March).</p>
-      <div class="card"><div class="card-head"><h2>Income &amp; Expenditure statement</h2></div>
+      <div class="page-head"><h1>Reports</h1>
+        <div class="actions no-print"><button class="btn" id="print">Print / save as PDF</button><button class="btn" id="csv">Download entries (CSV)</button></div></div>
+      <div class="card no-print">
+        <form id="range" class="inline-form" style="margin-top:0">
+          <div><label for="r-from">From</label><input id="r-from" type="date" value="${from}" required></div>
+          <div><label for="r-to">To</label><input id="r-to" type="date" value="${to}" required></div>
+          <button class="btn primary" type="submit">Show report</button>
+        </form>
+        <div class="seg" role="group" aria-label="Quick ranges" style="margin-top:12px;flex-wrap:wrap">
+          ${presets.map(([k, l]) => `<button type="button" data-preset="${k}" class="${activePreset === k ? 'on' : ''}" aria-pressed="${activePreset === k}">${l}</button>`).join('')}
+        </div>
+      </div>
+      <p class="muted small" style="margin-top:12px"><b>Period: ${esc(periodText)}</b> (${days} day${days === 1 ? '' : 's'}) · only approved entries are counted.</p>
+      <div class="grid tiles" style="margin-bottom:16px">
+        <div class="card tile"><div class="label">Income (money in)</div><div class="value">${fmt(totInc)}</div><div class="sub">${inc.length} receipts</div></div>
+        <div class="card tile"><div class="label">Expenses (money out)</div><div class="value">${fmt(totExp)}</div><div class="sub">${exp.length} payments</div></div>
+        <div class="card tile surplus ${net < 0 ? 'neg' : ''}"><div class="label">${net >= 0 ? 'Surplus (money left with you)' : 'Deficit (spent more than received)'}</div>
+          <div class="value">${net < 0 ? '−' : ''}${fmt(Math.abs(net))}</div><div class="sub">${fmt(totInc)} − ${fmt(totExp)}</div></div>
+      </div>
+      <div class="card"><div class="card-head"><h2>Income &amp; Expenditure statement</h2><span class="muted small">${esc(periodText)}</span></div>
         <div class="grid two">
           <div><h3>Income</h3>${catTable(incByCat, totInc)}</div>
           <div><h3>Expenditure</h3>${catTable(expByCat, totExp)}</div>
@@ -816,7 +877,7 @@
         <p style="margin-top:12px"><b>${totInc - totExp >= 0 ? 'Surplus (income over expenditure)' : 'Deficit (expenditure over income)'}: ${fmt(Math.abs(totInc - totExp))}</b></p>
       </div>
       <div class="card"><div class="card-head"><h2>Budget vs actual</h2>${can.admin() ? '<a class="small no-print" href="#/settings">Set budgets →</a>' : ''}</div>
-        ${bRows.length ? `<div class="table-wrap"><table><thead><tr><th>Category</th><th>Type</th><th class="num">Budget</th><th class="num">Actual</th><th class="num">Remaining</th><th>Used</th><th></th></tr></thead><tbody>
+        ${!fullFy ? '<div class="empty">Budgets are set per financial year. Click <b>This FY</b> or <b>Last FY</b> above to compare against the budget.</div>' : bRows.length ? `<div class="table-wrap"><table><thead><tr><th>Category</th><th>Type</th><th class="num">Budget</th><th class="num">Actual</th><th class="num">Remaining</th><th>Used</th><th></th></tr></thead><tbody>
           ${bRows.map((r) => `<tr><td>${esc(r.c.name)}</td><td class="kind">${r.c.kind === 'income' ? 'Income' : 'Expense'}</td>
             <td class="num">${r.budget ? fmt(r.budget) : '—'}</td><td class="num">${fmt(r.actual)}</td>
             <td class="num">${r.budget ? fmt(r.budget - r.actual) : '—'}</td>
@@ -829,14 +890,25 @@
           ${fundIds.length ? `<div class="table-wrap"><table><thead><tr><th>Fund</th><th class="num">Income</th><th class="num">Expenses</th><th class="num">Net</th></tr></thead><tbody>
           ${fundIds.map((id) => `<tr><td>${id === 'none' ? 'No fund' : esc(fundName(id))}</td><td class="num">${fmt(fInc[id] || 0)}</td><td class="num">${fmt(fExp[id] || 0)}</td><td class="num">${fmt((fInc[id] || 0) - (fExp[id] || 0))}</td></tr>`).join('')}
           </tbody></table></div>` : '<div class="empty">Nothing yet.</div>'}</div>
-        <div class="card"><div class="card-head"><h2>Month-wise summary</h2></div>
-          <div class="table-wrap"><table><thead><tr><th>Month</th><th class="num">Income</th><th class="num">Expenses</th><th class="num">Net</th></tr></thead><tbody>
-          ${MONTHS.map((mo, i) => `<tr><td>${mo}</td><td class="num">${fmt(mInc[i])}</td><td class="num">${fmt(mExp[i])}</td><td class="num">${fmt(mInc[i] - mExp[i])}</td></tr>`).join('')}
-          </tbody><tfoot><tr><td>Total</td><td class="num">${fmt(totInc)}</td><td class="num">${fmt(totExp)}</td><td class="num">${fmt(totInc - totExp)}</td></tr></tfoot></table></div></div>
-      </div>`;
-    bindFy(v, VIEWS.reports);
+        <div class="card"><div class="card-head"><h2>${byDay ? 'Day-wise' : 'Month-wise'} summary</h2></div>
+          ${shownBuckets.length ? `<div class="table-wrap"><table><thead><tr><th>${byDay ? 'Date' : 'Month'}</th><th class="num">Income</th><th class="num">Expenses</th><th class="num">Net</th></tr></thead><tbody>
+          ${shownBuckets.map((b) => `<tr><td class="nowrap">${esc(b.label)}</td><td class="num">${fmt(bInc[b.key] || 0)}</td><td class="num">${fmt(bExp[b.key] || 0)}</td><td class="num">${fmt((bInc[b.key] || 0) - (bExp[b.key] || 0))}</td></tr>`).join('')}
+          </tbody><tfoot><tr><td>Total</td><td class="num">${fmt(totInc)}</td><td class="num">${fmt(totExp)}</td><td class="num">${fmt(net)}</td></tr></tfoot></table></div>` : '<div class="empty">No approved entries in this period.</div>'}</div>
+      </div>
+      <div class="card" style="margin-top:16px"><div class="card-head"><h2>Entries in this period</h2><span class="muted small">${txns.length} approved</span></div>
+        ${txnTable(txns.filter((t) => t.kind !== 'transfer').concat(txns.filter((t) => t.kind === 'transfer')))}</div>`;
+    $('#range', v).onsubmit = (e) => {
+      e.preventDefault();
+      const f = $('#r-from', v).value, t = $('#r-to', v).value;
+      if (!f || !t) return toast('Choose both dates', 'error');
+      if (f > t) return toast('"From" date must be on or before the "To" date', 'error');
+      S.rep = { from: f, to: t };
+      VIEWS.reports(v);
+    };
+    $$('[data-preset]', v).forEach((b) => { b.onclick = () => { const [f, t] = rangePreset(b.dataset.preset); S.rep = { from: f, to: t }; VIEWS.reports(v); }; });
+    bindTxnRows(v);
     $('#print', v).onclick = () => window.print();
-    $('#csv', v).onclick = async () => exportTxns(await loadTxns(S.fy), `all-entries-FY${S.fy}.csv`);
+    $('#csv', v).onclick = async () => exportTxns(await loadRange(from, to), `entries-${from}-to-${to}.csv`);
   };
 
   // ---------------------------------------------------------------- Bank reconciliation
