@@ -8,7 +8,7 @@ window.APP_CONFIG = {
   SUPABASE_URL: "https://wqqfihlyoksejigtzyra.supabase.co",
   SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndxcWZpaGx5b2tzZWppZ3R6eXJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQzNjg4NTksImV4cCI6MjEwOTk0NDg1OX0.AL9UYgugcTT0_WzSqoFSShuLGNZHVPbbOCoGrnIR3Sk",
 
-  SCHOOL_NAME: "Our School",
+  SCHOOL_NAME: "Tharka High School",
   CURRENCY: "INR",
   LOCALE: "en-IN",
 
