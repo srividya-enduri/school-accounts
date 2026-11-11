@@ -113,6 +113,16 @@ main { max-width: 1160px; margin: 0 auto; padding: 20px 16px 48px; }
 .tile .label { color: var(--text-2); font-size: .9rem; }
 .tile .value { font-size: 1.6rem; font-weight: 700; margin-top: 2px; }
 .tile .sub { color: var(--muted); font-size: .85rem; }
+.tile .sub.flag-near { color: var(--warn-text); }
+.tile.surplus { border-color: var(--good-text); }
+.tile.surplus .value { color: var(--good-text); }
+.tile.surplus.neg { border-color: var(--crit-text); }
+.tile.surplus.neg .value { color: var(--crit-text); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button { font: inherit; border: 0; background: none; color: var(--text-2); padding: 7px 14px; cursor: pointer; min-height: 36px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.seg button:disabled { opacity: .45; cursor: not-allowed; }
 
 .center-screen { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .auth-card { width: 100%; max-width: 400px; }

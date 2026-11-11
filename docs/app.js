@@ -410,7 +410,7 @@
   }
 
   function drawCatBars(el, rows, total) {
-    if (!rows.length) { el.innerHTML = '<div class="empty">No approved expenses yet in this year.</div>'; return; }
+    if (!rows.length) { el.innerHTML = '<div class="empty">No approved expenses in this period.</div>'; return; }
     const max = rows[0].amount;
     el.innerHTML = `<div class="hbars">${rows.map((r, i) => `
       <div class="hbar" data-i="${i}">
@@ -435,29 +435,56 @@
       q(sb.from('transactions').select('id,amount').eq('status', 'pending'))
     ]);
     const ok = txns.filter((t) => t.status === 'approved');
-    const incRows = ok.filter((t) => t.kind === 'income');
-    const expRows = ok.filter((t) => t.kind === 'expense');
-    const inc = sum(incRows), exp = sum(expRows), net = inc - exp;
     const mInc = Array(12).fill(0), mExp = Array(12).fill(0);
-    incRows.forEach((t) => { mInc[fyMonth(t.txn_date)] += Number(t.amount); });
-    expRows.forEach((t) => { mExp[fyMonth(t.txn_date)] += Number(t.amount); });
+    ok.forEach((t) => {
+      if (t.kind === 'income') mInc[fyMonth(t.txn_date)] += Number(t.amount);
+      if (t.kind === 'expense') mExp[fyMonth(t.txn_date)] += Number(t.amount);
+    });
+
+    // Period for the summary tiles: today, this month, or the whole financial year
+    const today = todayStr();
+    const isCurFY = S.fy === fyOf(today);
+    if (!isCurFY) S.period = 'fy';
+    const period = S.period || 'today';
+    const inPeriod = (t) => period === 'today' ? t.txn_date === today
+      : period === 'month' ? t.txn_date.slice(0, 7) === today.slice(0, 7) : true;
+    const pRows = txns.filter(inPeriod);
+    const pOk = pRows.filter((t) => t.status === 'approved');
+    const pPend = pRows.filter((t) => t.status === 'pending');
+    const incRows = pOk.filter((t) => t.kind === 'income');
+    const expRows = pOk.filter((t) => t.kind === 'expense');
+    const inc = sum(incRows), exp = sum(expRows), net = inc - exp;
+    const pendInc = sum(pPend.filter((t) => t.kind === 'income'));
+    const pendExp = sum(pPend.filter((t) => t.kind === 'expense'));
+    const netAll = net + pendInc - pendExp;
+    const periodName = { today: `Today (${fmtDate(today)})`, month: `This month (${MONTHS[fyMonth(today)]})`, fy: `Full year FY ${S.fy}` }[period];
+
     const byCat = {};
     expRows.forEach((t) => { byCat[t.category_id] = (byCat[t.category_id] || 0) + Number(t.amount); });
     const catRows = Object.entries(byCat).map(([id, amount]) => ({ name: catName(id), amount })).sort((a, b) => b.amount - a.amount);
     const recent = txns.slice(0, 8);
+    const pendNote = (amt) => amt ? `<div class="sub flag-near">+ ${fmt(amt)} waiting for approval</div>` : '';
 
     v.innerHTML = `
       <div class="page-head"><h1>Dashboard</h1>${fySelect()}</div>
+      <div class="seg" role="group" aria-label="Period">
+        ${[['today', 'Today'], ['month', 'This month'], ['fy', 'Full year']].map(([k, l]) =>
+          `<button type="button" class="${period === k ? 'on' : ''}" data-period="${k}" ${!isCurFY && k !== 'fy' ? 'disabled' : ''} aria-pressed="${period === k}">${l}</button>`).join('')}
+      </div>
+      <p class="muted small" style="margin:8px 0 12px">${esc(periodName)} · approved entries only</p>
       <div class="grid tiles">
-        <div class="card tile"><div class="label">Income (approved)</div><div class="value">${fmt(inc)}</div><div class="sub">${incRows.length} receipts</div></div>
-        <div class="card tile"><div class="label">Expenses (approved)</div><div class="value">${fmt(exp)}</div><div class="sub">${expRows.length} payments</div></div>
-        <div class="card tile"><div class="label">${net >= 0 ? 'Surplus' : 'Deficit'}</div><div class="value">${fmt(Math.abs(net))}</div>
-          <div class="sub">${inc ? `${((net / inc) * 100).toFixed(1)}% of income saved` : 'No income yet'}</div></div>
-        <div class="card tile"><div class="label">Waiting for approval</div><div class="value">${pend.length}</div><div class="sub">${fmt(sum(pend))} in total · all years</div></div>
+        <div class="card tile"><div class="label">Income (money in)</div><div class="value">${fmt(inc)}</div><div class="sub">${incRows.length} receipts</div>${pendNote(pendInc)}</div>
+        <div class="card tile"><div class="label">Expenses (money out)</div><div class="value">${fmt(exp)}</div><div class="sub">${expRows.length} payments</div>${pendNote(pendExp)}</div>
+        <div class="card tile surplus ${net < 0 ? 'neg' : ''}"><div class="label">${net >= 0 ? 'Surplus (money left with you)' : 'Deficit (spent more than received)'}</div>
+          <div class="value">${net < 0 ? '−' : ''}${fmt(Math.abs(net))}</div>
+          <div class="sub">${fmt(inc)} − ${fmt(exp)}</div>
+          ${pPend.length ? `<div class="sub">After pending approvals: ${netAll < 0 ? '−' : ''}${fmt(Math.abs(netAll))}</div>` : ''}</div>
+        <div class="card tile"><div class="label">Waiting for approval</div><div class="value">${pend.length}</div><div class="sub">${fmt(sum(pend))} in total · all years</div>
+          ${pend.length ? `<div class="sub"><a href="#/approvals">Review →</a></div>` : ''}</div>
       </div>
       <div class="grid two" style="margin-top:16px">
         <div class="card"><div class="card-head"><h2>Income vs expenses by month</h2><span class="muted small">FY ${S.fy}</span></div><div class="chart" id="ch-month"></div></div>
-        <div class="card"><div class="card-head"><h2>Where the money went</h2><span class="muted small">Expenses by category</span></div><div id="ch-cat"></div></div>
+        <div class="card"><div class="card-head"><h2>Where the money went</h2><span class="muted small">${esc(periodName)}</span></div><div id="ch-cat"></div></div>
       </div>
       <div class="grid two" style="margin-top:16px">
         <div class="card"><div class="card-head"><h2>Account balances today</h2><a class="small" href="#/reconcile">Check against bank →</a></div>
@@ -468,6 +495,7 @@
           ${txnTable(recent, { compact: true })}</div>
       </div>`;
     bindFy(v, VIEWS.dashboard);
+    $$('[data-period]', v).forEach((b) => { b.onclick = () => { S.period = b.dataset.period; VIEWS.dashboard(v); }; });
     drawMonthly($('#ch-month', v), mInc, mExp);
     drawCatBars($('#ch-cat', v), catRows, exp);
     bindTxnRows(v);
