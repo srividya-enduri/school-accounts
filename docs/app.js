@@ -585,48 +585,60 @@
   }
 
   // ---------------------------------------------------------------- New entry form
-  function openEntryForm(kind) {
-    const title = { income: 'Money in — new receipt', expense: 'Money out — new payment voucher', transfer: 'Transfer between accounts' }[kind];
-    const cats = S.cats.filter((c) => c.kind === kind && c.active);
-    const accts = S.accounts.filter((a) => a.active);
-    const funds = S.funds.filter((x) => x.active);
-    const billRequired = kind === 'expense' && cfg.REQUIRE_BILL_FOR_PAYMENTS;
+  // kind: income | expense | transfer. t: an existing pending entry to edit (optional)
+  function openEntryForm(kind, t) {
+    const editing = !!t;
+    const title = editing ? `Edit ${t.number}`
+      : { income: 'Money in — new receipt', expense: 'Money out — new payment voucher', transfer: 'Transfer between accounts' }[kind];
+    // Keep the entry's current choices selectable even if they were later made inactive
+    const keep = (x, id) => x.active || (editing && String(x.id) === String(id));
+    const cats = S.cats.filter((c) => c.kind === kind && keep(c, t?.category_id));
+    const accts = S.accounts.filter((a) => keep(a, t?.account_id) || keep(a, t?.to_account_id));
+    const funds = S.funds.filter((x) => keep(x, t?.fund_id));
+    const billRequired = kind === 'expense' && cfg.REQUIRE_BILL_FOR_PAYMENTS && !(editing && t.bill_path);
+    const v = (val) => esc(val ?? '');
+    let dateLimits = `max="${todayStr()}"`;
+    if (editing) { const [a, b] = fyRange(fyOf(t.txn_date)); dateLimits = `min="${a}" max="${b < todayStr() ? b : todayStr()}"`; }
     const d = modal(`${modalHead(title)}
       <form id="ef">
         <div class="field-row">
-          <div class="field"><label for="e-date">Date</label><input id="e-date" type="date" value="${todayStr()}" max="${todayStr()}" required></div>
-          <div class="field"><label for="e-amount">Amount (${esc(cfg.CURRENCY)})</label><input id="e-amount" type="number" inputmode="decimal" min="0.01" step="0.01" required></div>
+          <div class="field"><label for="e-date">Date</label><input id="e-date" type="date" value="${editing ? t.txn_date : todayStr()}" ${dateLimits} required></div>
+          <div class="field"><label for="e-amount">Amount (${esc(cfg.CURRENCY)})</label><input id="e-amount" type="number" inputmode="decimal" min="0.01" step="0.01" value="${editing ? v(t.amount) : ''}" required></div>
         </div>
         <div class="field-row">
           <div class="field"><label for="e-acct">${kind === 'income' ? 'Received into' : kind === 'expense' ? 'Paid from' : 'From account'}</label>
-            <select id="e-acct" required>${opt(accts)}</select></div>
+            <select id="e-acct" required>${opt(accts, t?.account_id)}</select></div>
           ${kind === 'transfer'
-            ? `<div class="field"><label for="e-to">To account</label><select id="e-to" required>${opt(accts, accts[1]?.id)}</select></div>`
-            : `<div class="field"><label for="e-cat">Category</label><select id="e-cat" required><option value="">Choose…</option>${opt(cats)}</select></div>`}
+            ? `<div class="field"><label for="e-to">To account</label><select id="e-to" required>${opt(accts, editing ? t.to_account_id : accts[1]?.id)}</select></div>`
+            : `<div class="field"><label for="e-cat">Category</label><select id="e-cat" required><option value="">Choose…</option>${opt(cats, t?.category_id)}</select></div>`}
         </div>
         ${kind === 'transfer' ? '' : `
         <div class="field-row">
-          <div class="field"><label for="e-fund">Fund</label><select id="e-fund">${opt(funds, funds[0]?.id)}</select></div>
+          <div class="field"><label for="e-fund">Fund</label><select id="e-fund">${opt(funds, editing ? t.fund_id : funds[0]?.id)}</select></div>
           <div class="field"><label for="e-party">${kind === 'income' ? 'Received from (student / parent / donor)' : 'Paid to (vendor / staff name)'}</label>
-            <input id="e-party" required maxlength="200"></div>
+            <input id="e-party" required maxlength="200" value="${editing ? v(t.party) : ''}"></div>
         </div>`}
         <div class="field-row">
-          <div class="field"><label for="e-mode">Mode</label><select id="e-mode">${Object.entries(MODES).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
-          <div class="field"><label for="e-ref">Cheque no. / UPI ref / Txn ID</label><input id="e-ref" maxlength="100"></div>
+          <div class="field"><label for="e-mode">Mode</label><select id="e-mode">${Object.entries(MODES).map(([k, l]) => `<option value="${k}" ${editing && t.mode === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+          <div class="field"><label for="e-ref">Cheque no. / UPI ref / Txn ID</label><input id="e-ref" maxlength="100" value="${editing ? v(t.reference) : ''}"></div>
         </div>
-        <div class="field"><label for="e-desc">Description</label><textarea id="e-desc" maxlength="1000" placeholder="${kind === 'income' ? 'e.g. Term 2 tuition fee, Class 5, Roll 12' : kind === 'expense' ? 'e.g. October electricity bill' : 'e.g. Cash withdrawn for petty cash'}"></textarea></div>
-        <div class="field"><label for="e-bill">${kind === 'expense' ? 'Bill / invoice (photo or PDF)' + (billRequired ? ' — required' : '') : 'Attachment (optional)'}</label>
+        <div class="field"><label for="e-desc">Description</label><textarea id="e-desc" maxlength="1000" placeholder="${kind === 'income' ? 'e.g. Term 2 tuition fee, Class 5, Roll 12' : kind === 'expense' ? 'e.g. October electricity bill' : 'e.g. Cash withdrawn for petty cash'}">${editing ? v(t.description) : ''}</textarea></div>
+        <div class="field"><label for="e-bill">${editing && t.bill_path ? 'Replace attachment (optional — leave empty to keep the current one)'
+            : kind === 'expense' ? 'Bill / invoice (photo or PDF)' + (billRequired ? ' — required' : '') : 'Attachment (optional)'}</label>
           <input id="e-bill" type="file" accept="image/*,application/pdf" ${billRequired ? 'required' : ''}></div>
-        <p class="muted small">After saving, the entry gets a number and waits for an admin to approve it. Entries can't be deleted — if something is wrong, the admin rejects or voids it.</p>
-        <div class="actions"><button class="btn primary" type="submit">Save entry</button><button class="btn" type="button" data-close>Cancel</button></div>
+        <p class="muted small">${editing
+          ? `You can edit this until an admin approves or rejects it. The number ${esc(t.number)} stays the same, and every change is recorded in the audit log.`
+          : 'After saving, the entry gets a number and waits for an admin to approve it. You can edit it until it is approved. Entries can\'t be deleted — if something is wrong after approval, the admin voids it.'}</p>
+        <div class="actions"><button class="btn primary" type="submit">${editing ? 'Save changes' : 'Save entry'}</button><button class="btn" type="button" data-close>Cancel</button></div>
       </form>`);
     $('#ef', d).onsubmit = async (e) => {
       e.preventDefault();
-      const btn = e.submitter;
+      const btn = e.submitter || $('#ef button[type="submit"]', d);
       const amount = Number($('#e-amount', d).value);
       const date = $('#e-date', d).value;
       if (!(amount > 0)) return toast('Enter an amount greater than zero', 'error');
       if (date > todayStr()) return toast('Date cannot be in the future', 'error');
+      if (editing && fyOf(date) !== fyOf(t.txn_date)) return toast(`The date must stay in FY ${fyOf(t.txn_date)}. To move it to another year, ask the admin to reject it and enter it again.`, 'error');
       const row = {
         kind, txn_date: date, amount,
         account_id: Number($('#e-acct', d).value),
@@ -644,6 +656,7 @@
       }
       const file = $('#e-bill', d).files[0];
       if (file && file.size > 10 * 1024 * 1024) return toast('File is larger than 10 MB', 'error');
+      const label = btn.textContent;
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
         if (file) {
@@ -652,14 +665,25 @@
           await q(sb.storage.from('bills').upload(path, file, { contentType: file.type || undefined, upsert: false }));
           row.bill_path = path;
         }
-        const saved = await q(sb.from('transactions').insert(row).select().single());
-        closeModal();
-        toast(`Saved as ${saved.number} — waiting for approval`);
+        if (editing) {
+          await q(sb.rpc('edit_pending_txn', {
+            p_id: t.id, p_txn_date: row.txn_date, p_amount: row.amount, p_account_id: row.account_id,
+            p_to_account_id: row.to_account_id ?? null, p_category_id: row.category_id ?? null, p_fund_id: row.fund_id ?? null,
+            p_party: row.party ?? null, p_mode: row.mode, p_reference: row.reference, p_description: row.description,
+            p_bill_path: row.bill_path ?? null
+          }));
+          closeModal();
+          toast(`${t.number} updated — still waiting for approval`);
+        } else {
+          const saved = await q(sb.from('transactions').insert({ kind, ...row }).select().single());
+          closeModal();
+          toast(`Saved as ${saved.number} — waiting for approval`);
+        }
         if (fyOf(date) !== S.fy) S.fy = fyOf(date);
         route();
       } catch (err) {
         toast(err.message, 'error');
-        btn.disabled = false; btn.textContent = 'Save entry';
+        btn.disabled = false; btn.textContent = label;
       }
     };
   }
@@ -687,6 +711,7 @@
       <dl class="details">${rows.map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join('')}</dl>
       <div class="actions">
         ${t.bill_path ? '<button class="btn" id="d-bill">View attachment</button>' : (t.kind === 'expense' ? '<span class="flag-near">⚠ No bill attached</span>' : '')}
+        ${t.status === 'pending' && mine && can.enter() ? '<button class="btn primary" id="d-edit">✏️ Edit</button>' : ''}
         <button class="btn" id="d-print">Print ${t.kind === 'income' ? 'receipt' : 'voucher'}</button>
         ${isAdmin && t.status === 'pending' && !mine ? '<button class="btn primary" id="d-approve">✓ Approve</button><button class="btn danger" id="d-reject">✕ Reject</button>' : ''}
         ${isAdmin && t.status === 'approved' ? '<button class="btn danger" id="d-void">⊘ Void</button>' : ''}
@@ -701,6 +726,7 @@
       } catch (e) { toast(e.message, 'error'); }
     };
     $('#d-print', d).onclick = () => printDoc(t);
+    if ($('#d-edit', d)) $('#d-edit', d).onclick = () => openEntryForm(t.kind, t);
     const act = async (status, note) => {
       try {
         await q(sb.rpc('set_txn_status', { p_id: t.id, p_status: status, p_note: note || null }));
@@ -756,8 +782,8 @@
       q(sb.from('transactions').select('*').eq('status', 'rejected').order('reviewed_at', { ascending: false }).limit(20))
     ]);
     const intro = can.admin()
-      ? 'Open each entry, check the bill and details, then approve or reject. You can\'t approve entries you entered yourself.'
-      : 'These entries are waiting for an admin to check them.';
+      ? 'Open each entry, check the bill and details, then approve or reject. You can\'t approve entries you entered yourself — but you can open them and click Edit to fix mistakes.'
+      : 'These entries are waiting for an admin to check them. Open one you entered and click Edit to fix a mistake.';
     v.innerHTML = `
       <div class="page-head"><h1>Approvals</h1></div>
       <div class="card"><div class="card-head"><h2>Waiting for approval</h2><span class="muted small">${pending.length} entries · ${fmt(sum(pending))}</span></div>
